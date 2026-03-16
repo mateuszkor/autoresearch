@@ -464,7 +464,7 @@ WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
 FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 
 # Model size
-DEPTH = 4               # number of transformer layers
+DEPTH = 3               # number of transformer layers
 # T4 (14.5 GiB) can't fit batch 128; inductor materialises the O(T^2)
 # attention matrix on pre-Ampere (no fused SDPA lowering). Scale down.
 _gpu_mem_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
