@@ -452,7 +452,7 @@ HEAD_DIM = 128          # target head dimension for attention
 WINDOW_PATTERN = "SSSL" # sliding window pattern: L=full, S=half context
 
 # Optimization
-TOTAL_BATCH_SIZE = 2**15 # ~32K tokens per optimizer step
+TOTAL_BATCH_SIZE = 2**16 # ~65K tokens per optimizer step
 EMBEDDING_LR = 0.6      # learning rate for token embeddings (Adam)
 UNEMBEDDING_LR = 0.004  # learning rate for lm_head (Adam)
 MATRIX_LR = 0.04        # learning rate for matrix parameters (Muon)
@@ -468,7 +468,7 @@ DEPTH = 3               # number of transformer layers
 # T4 (14.5 GiB) can't fit batch 128; inductor materialises the O(T^2)
 # attention matrix on pre-Ampere (no fused SDPA lowering). Scale down.
 _gpu_mem_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-DEVICE_BATCH_SIZE = 128 if _gpu_mem_gib >= 40 else 16
+DEVICE_BATCH_SIZE = 128 if _gpu_mem_gib >= 40 else 32
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
