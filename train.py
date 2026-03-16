@@ -17,11 +17,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kernels import get_kernel
-cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
+def _sdpa(q, k, v, window_size):
+    """Causal self-attention via torch.nn.functional.scaled_dot_product_attention."""
+    B, T, n_head, head_dim = q.shape
+    n_kv_head = k.shape[2]
+
+    # SDPA expects (B, heads, T, head_dim)
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
+
+    # Expand k/v for grouped-query attention
+    if n_kv_head != n_head:
+        groups = n_head // n_kv_head
+        k = k.repeat_interleave(groups, dim=1)
+        v = v.repeat_interleave(groups, dim=1)
+
+    y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
+    return y.transpose(1, 2).contiguous()  # (B, T, n_head, head_dim)
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -90,8 +104,8 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
-        y = y.contiguous().view(B, T, -1)
+        y = _sdpa(q, k, v, window_size)
+        y = y.view(B, T, -1)
         y = self.c_proj(y)
         return y
 
@@ -175,10 +189,12 @@ class GPT(nn.Module):
         head_dim = self.config.n_embd // self.config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.cos, self.sin = cos, sin
-        # Cast embeddings to bf16
-        self.transformer.wte.to(dtype=torch.bfloat16)
-        for ve in self.value_embeds.values():
-            ve.to(dtype=torch.bfloat16)
+        # Cast embeddings to bf16 on Ampere+; keep float32 on older GPUs
+        # (float32 params are required for GradScaler to work with float16 AMP).
+        if torch.cuda.get_device_capability()[0] >= 8:
+            self.transformer.wte.to(dtype=torch.bfloat16)
+            for ve in self.value_embeds.values():
+                ve.to(dtype=torch.bfloat16)
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         if device is None:
@@ -188,7 +204,8 @@ class GPT(nn.Module):
         t = torch.arange(seq_len, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.bfloat16(), sin.bfloat16()
+        if torch.cuda.get_device_capability()[0] >= 8:
+            cos, sin = cos.bfloat16(), sin.bfloat16()
         cos, sin = cos[None, :, None, :], sin[None, :, None, :]
         return cos, sin
 
@@ -321,7 +338,7 @@ def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momen
     momentum_buffer.lerp_(stacked_grads, 1 - momentum)
     g = stacked_grads.lerp_(momentum_buffer, momentum)
     # Polar express orthogonalization
-    X = g.bfloat16()
+    X = g.float()
     X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
     if g.size(-2) > g.size(-1):
         for a, b, c in polar_express_coeffs[:ns_steps]:
@@ -448,7 +465,10 @@ FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 
 # Model size
 DEPTH = 8               # number of transformer layers
-DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
+# T4 (14.5 GiB) can't fit batch 128; inductor materialises the O(T^2)
+# attention matrix on pre-Ampere (no fused SDPA lowering). Scale down.
+_gpu_mem_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
+DEVICE_BATCH_SIZE = 128 if _gpu_mem_gib >= 40 else 16
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
@@ -459,7 +479,10 @@ torch.manual_seed(42)
 torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
-autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+_amp_dtype = torch.float16 if torch.cuda.get_device_capability()[0] < 8 else torch.bfloat16
+autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=_amp_dtype)
+# GradScaler prevents float16 gradient overflow; no-op for bfloat16.
+grad_scaler = torch.amp.GradScaler(enabled=(_amp_dtype == torch.float16))
 H100_BF16_PEAK_FLOPS = 989.5e12
 
 tokenizer = Tokenizer.from_directory()
@@ -548,7 +571,7 @@ while True:
             loss = model(x, y)
         train_loss = loss.detach()
         loss = loss / grad_accum_steps
-        loss.backward()
+        grad_scaler.scale(loss).backward()
         x, y, epoch = next(train_loader)
 
     # Progress and schedules
@@ -561,7 +584,9 @@ while True:
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
             group["weight_decay"] = muon_weight_decay
-    optimizer.step()
+    grad_scaler.unscale_(optimizer)
+    grad_scaler.step(optimizer)
+    grad_scaler.update()
     model.zero_grad(set_to_none=True)
 
     train_loss_f = train_loss.item()
