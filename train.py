@@ -195,10 +195,11 @@ class GPT(nn.Module):
         head_dim = self.config.n_embd // self.config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.cos, self.sin = cos, sin
-        # Cast embeddings to bf16
-        self.transformer.wte.to(dtype=torch.bfloat16)
-        for ve in self.value_embeds.values():
-            ve.to(dtype=torch.bfloat16)
+        # Cast embeddings to bf16 on Ampere+; keep float32 on older GPUs
+        if torch.cuda.get_device_capability()[0] >= 8:
+            self.transformer.wte.to(dtype=torch.bfloat16)
+            for ve in self.value_embeds.values():
+                ve.to(dtype=torch.bfloat16)
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         if device is None:
@@ -208,7 +209,8 @@ class GPT(nn.Module):
         t = torch.arange(seq_len, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.bfloat16(), sin.bfloat16()
+        if torch.cuda.get_device_capability()[0] >= 8:
+            cos, sin = cos.bfloat16(), sin.bfloat16()
         cos, sin = cos[None, :, None, :], sin[None, :, None, :]
         return cos, sin
 
@@ -482,7 +484,10 @@ torch.manual_seed(42)
 torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
-autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+_amp_dtype = torch.float16 if torch.cuda.get_device_capability()[0] < 8 else torch.bfloat16
+autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=_amp_dtype)
+# GradScaler prevents float16 gradient overflow; no-op for bfloat16.
+grad_scaler = torch.amp.GradScaler(enabled=(_amp_dtype == torch.float16))
 H100_BF16_PEAK_FLOPS = 989.5e12
 
 tokenizer = Tokenizer.from_directory()
@@ -573,7 +578,7 @@ while True:
             loss = model(x, y)
         train_loss = loss.detach()
         loss = loss / grad_accum_steps
-        loss.backward()
+        grad_scaler.scale(loss).backward()
         x, y, epoch = next(train_loader)
 
     # Progress and schedules
@@ -586,8 +591,10 @@ while True:
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
             group["weight_decay"] = muon_weight_decay
+    grad_scaler.unscale_(optimizer)
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
+    grad_scaler.step(optimizer)
+    grad_scaler.update()
     model.zero_grad(set_to_none=True)
 
     train_loss_f = train_loss.item()
