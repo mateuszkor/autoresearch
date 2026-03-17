@@ -452,7 +452,7 @@ class MuonAdamW(torch.optim.Optimizer):
 # ---------------------------------------------------------------------------
 
 # Model architecture
-ASPECT_RATIO = 85       # model_dim = depth * ASPECT_RATIO
+ASPECT_RATIO = 64       # model_dim = depth * ASPECT_RATIO
 HEAD_DIM = 128          # target head dimension for attention
 WINDOW_PATTERN = "SSSL" # sliding window pattern: L=full, S=half context
 
@@ -469,7 +469,7 @@ WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
 FINAL_LR_FRAC = 0.1     # final LR as fraction of initial
 
 # Model size
-DEPTH = 3               # number of transformer layers
+DEPTH = 4               # number of transformer layers
 # T4 (14.5 GiB) can't fit batch 128; SDPA materialises the O(T^2)
 # attention matrix on pre-Ampere. Scale down.
 _gpu_mem_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
