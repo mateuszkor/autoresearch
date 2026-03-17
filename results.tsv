@@ -1,0 +1,17 @@
+commit	val_bpb	memory_gb	status	description
+dc32598	1.775065	7.6	keep	baseline
+1a40638	1.872304	11.6	discard	increase depth from 8 to 10
+9c8fe7d	1.592904	4.5	keep	decrease depth from 8 to 6
+df6356b	1.361625	2.3	keep	decrease depth from 6 to 4
+26fd839	1.353960	1.9	keep	decrease depth from 4 to 3
+8404b0c	1.420488	1.0	discard	decrease depth from 3 to 2
+7d96384	1.443331	2.6	discard	increase aspect ratio from 64 to 96
+8963bc5	1.303917	1.9	keep	reduce total batch size from 2^19 to 2^17
+1b85a6a	1.230783	1.9	keep	reduce total batch size from 2^17 to 2^15
+9990e8b	1.227667	3.6	keep	increase device batch to 32 and total batch to 2^16
+cf02f93	1.227676	3.6	discard	switch window pattern to all full attention (L)
+aa56a4e	1.233457	3.6	discard	double matrix LR (0.08) and embedding LR (1.2)
+e1890ee	1.224586	3.6	keep	add 5% LR warmup
+e4e14fc	1.249520	2.9	discard	reduce HEAD_DIM from 128 to 64
+320a4ab	1.220965	4.3	keep	increase depth to 4 with current batch/warmup
+328df24	1.234444	7.3	discard	increase depth from 4 to 5
