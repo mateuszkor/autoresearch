@@ -28,6 +28,20 @@ else:
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
+def _sdpa(q, k, v, window_size):
+    """Causal self-attention via torch.nn.functional.scaled_dot_product_attention."""
+    B, T, n_head, head_dim = q.shape
+    n_kv_head = k.shape[2]
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
+    if n_kv_head != n_head:
+        groups = n_head // n_kv_head
+        k = k.repeat_interleave(groups, dim=1)
+        v = v.repeat_interleave(groups, dim=1)
+    y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+    return y.transpose(1, 2).contiguous()
+
 # ---------------------------------------------------------------------------
 # GPT Model
 # ---------------------------------------------------------------------------
