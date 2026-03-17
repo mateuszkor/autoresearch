@@ -467,8 +467,11 @@ WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
 FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 
 # Model size
-DEPTH = 8               # number of transformer layers
-DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
+DEPTH = 4               # number of transformer layers
+# T4 (14.5 GiB) can't fit batch 128; SDPA materialises the O(T^2)
+# attention matrix on pre-Ampere. Scale down.
+_gpu_mem_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
+DEVICE_BATCH_SIZE = 128 if _gpu_mem_gib >= 40 else 8
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
